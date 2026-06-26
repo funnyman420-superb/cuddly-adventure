@@ -1,0 +1,56 @@
+name: scheduled-sample
+
+# Runs on a schedule and can also be started by hand from the Actions tab.
+on:
+  schedule:
+    # Every 5 minutes (UTC). GitHub treats this as best-effort; under load it
+    # can be delayed, and the minimum allowed interval is 5 minutes.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+# Allow the job to push the updated data files back to the repo.
+permissions:
+  contents: write
+
+# If a run is still going when the next tick fires, let it finish first.
+concurrency:
+  group: scheduled-sample
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run sampler
+        env:
+          # Secret-backed values. Configure these under
+          # Settings -> Secrets and variables -> Actions.
+          NOTIFY_TOKEN: ${{ secrets.NOTIFY_TOKEN }}
+          NOTIFY_TARGET: ${{ secrets.NOTIFY_TARGET }}
+          # Optional overrides (leave the secrets unset to use built-in defaults).
+          SOURCE_URL: ${{ secrets.SOURCE_URL }}
+          SOURCE_PAGE: ${{ secrets.SOURCE_PAGE }}
+          SOURCE_PICK_URL: ${{ secrets.SOURCE_PICK_URL }}
+          SAMPLER_TZ: ${{ secrets.SAMPLER_TZ }}
+        run: python tracker.py
+
+      - name: Persist updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A state.json history.csv
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "chore: update data"
+            git push
+          fi
