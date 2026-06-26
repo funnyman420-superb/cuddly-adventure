@@ -1028,7 +1028,7 @@ def evaluate(state, offers):
     message = header + "\n\n" + body
     for chat_id in state["chat_ids"]:
         nt_send(chat_id, message)
-    print(f"Sent {len(to_notify)} alert(s) to {len(state['chat_ids'])} chat(s).")
+    print(f"Sent {len(to_notify)} alert(s).")
 
 
 # ---------------------------------------------------------------------------
@@ -1042,7 +1042,7 @@ def main():
     print(f"Fetched {len(offers)} offer(s).")
     top = fetch_top_offer()
     if top:
-        print(f"Recommended offer: {top['seller']} @ ${top['price_per_1k']:.4f}/1k.")
+        print(f"${top['price_per_1k']:.4f}/1k.")
 
     # Record the datapoint first so /graph this run includes the latest price.
     if offers:
