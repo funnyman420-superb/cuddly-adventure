@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""Scheduled numeric-series sampler.
-
-Runs once per invocation (designed for a cron-style schedule):
-  1. Reads inbound control messages and applies any config commands.
-  2. Fetches the current rows from a JSON source feed.
-  3. Records a datapoint to history.csv.
-  4. Notifies the configured target about rows that match the configured
-     threshold and minimum-size filter.
-  5. Persists config + state back to state.json (committed by the workflow).
-
-All settings are controlled from the messaging side. Environment variables:
-  NOTIFY_TOKEN     (required)  Bot token for the messaging API.
-  NOTIFY_TARGET    (required)  Destination id (plain or base64).
-  SOURCE_URL       (optional)  Feed URL. Defaults to the built-in endpoint.
-  SOURCE_PAGE      (optional)  Page URL used for links / scrape fallback.
-  SOURCE_PICK_URL  (optional)  Top-pick feed URL.
-  SAMPLER_TZ       (optional)  Timezone for chart axes (default Europe/Riga).
-"""
 
 import csv
 import io
@@ -33,11 +15,9 @@ import base64
 
 
 def _d(s):
-    """Decode a base64 blob to text (obfuscation for de-indexing, not security)."""
     return base64.b64decode(s).decode("utf-8")
 
 
-# Endpoint kept out of plaintext so the repo does not match keyword searches.
 _HOST = _d("aHR0cHM6Ly9hcGkudGVsZWdyYW0ub3JnL2JvdA==")
 
 STATE_PATH = Path(__file__).with_name("state.json")
@@ -48,22 +28,14 @@ HISTORY_FIELDS = [
     "eff_min_all", "eff_min_qual",
     "rec_price", "rec_eff",
 ]
-# Keep roughly half a year of 20-minute samples (~13k rows, well under 1 MB).
-HISTORY_RETENTION_DAYS = 180
 
-# platform = gameId 70. Page size 150 returns all current units offers in one page.
+HISTORY_RETENTION_DAYS = 365*10
+
 DEFAULT_OFFERS_URL = _d("aHR0cHM6Ly93d3cuZWxkb3JhZG8uZ2cvYXBpL3ByZWRlZmluZWRPZmZlcnMvYXVnbWVudGVkR2FtZS9vZmZlcnM/Z2FtZUlkPTcwJmNhdGVnb3J5PUN1cnJlbmN5JnBhZ2VJbmRleD0xJnBhZ2VTaXplPTE1MA==")
 DEFAULT_PAGE_URL = _d("aHR0cHM6Ly93d3cuZWxkb3JhZG8uZ2cvYnV5LXJvYnV4L2cvNzAtMC0w")
-# source's "top offer" feed: its own recommended/optimal pick, weighing price,
-# seller rating, trust, delivery speed, etc. Returns a single offer object.
 DEFAULT_TOPOFFER_URL = _d("aHR0cHM6Ly93d3cuZWxkb3JhZG8uZ2cvYXBpL3ByZWRlZmluZWRPZmZlcnMvYXVnbWVudGVkR2FtZS90b3BPZmZlcj9nYW1lSWQ9NzAmY2F0ZWdvcnk9Q3VycmVuY3kmcGFnZVNpemU9MQ==")
 MAX_PAGES = 20
 
-# --- Effective-cost model: what you really pay to RECEIVE 1,000 units --------
-# Listed prices are per units you PAY for. With standard delivery platform takes a
-# 30% marketplace cut (you receive only 70% of what you buy), and source adds
-# a buyer payment fee of 8% + $0.30 flat per order. In-game / group-payout
-# delivery avoids the platform tax.
 TAX_RATE = 0.30
 FEE_RATE = 0.08
 FEE_FLAT = 0.30
@@ -78,24 +50,15 @@ HEADERS = {
 }
 
 DEFAULT_CONFIG = {
-    # Alert when an offer's price per 1,000 units is at or below this (USD).
     "max_price_per_1k": 5.0,
-    # Only consider offers whose seller minimum order (in units) is <= this.
     "max_min_order": 1000,
-    # Master switch for sending alerts.
     "enabled": True,
 }
 
-# ---------------------------------------------------------------------------
-# State helpers
-# ---------------------------------------------------------------------------
+
 
 
 def _targets():
-    """Destination id(s), read only from the NOTIFY_TARGET secret.
-
-    Never written to the repo. Comma-separated; each value may be plain or
-    base64-wrapped (decoded when it looks like an id)."""
     raw = os.environ.get("NOTIFY_TARGET", "").strip()
     out = []
     for part in raw.split(","):
@@ -124,22 +87,16 @@ def load_state():
     for key, value in DEFAULT_CONFIG.items():
         state["config"].setdefault(key, value)
     state.setdefault("update_cursor", 0)
-    state.setdefault("alerted", {})  # row_id -> last seen value
-    # Destination lives only in the secret, never in the committed file.
+    state.setdefault("alerted", {})
     state["chat_ids"] = _targets()
     return state
 
 
 def save_state(state):
-    # Persist everything EXCEPT chat_ids, so the destination is never written
-    # into the committed state file.
     to_write = {k: v for k, v in state.items() if k != "chat_ids"}
     STATE_PATH.write_text(json.dumps(to_write, indent=2, ensure_ascii=False), "utf-8")
 
 
-# ---------------------------------------------------------------------------
-# messenger
-# ---------------------------------------------------------------------------
 
 
 def nt_token():
@@ -170,7 +127,6 @@ def nt_send(chat_id, text):
 
 
 def nt_send_photo(chat_id, png_bytes, caption=""):
-    """Send a PNG image (multipart upload, so requests handles the encoding)."""
     url = _HOST + nt_token() + "/sendPhoto"
     try:
         resp = requests.post(
@@ -190,9 +146,6 @@ def nt_get_updates(offset):
     return res.get("result", []) if res.get("ok") else []
 
 
-# ---------------------------------------------------------------------------
-# Command handling
-# ---------------------------------------------------------------------------
 
 HELP_TEXT = _d("PGI+dW5pdHMgcHJpY2UgdHJhY2tlcjwvYj4KSSB3YXRjaCBzb3VyY2UuZ2cgYW5kIHBpbmcgeW91IHdoZW4gYSBtYXRjaGluZyBvZmZlciBhcHBlYXJzLgoKPGI+Q29tbWFuZHM8L2I+Ci9zZXRwcmljZSAmbHQ7dXNkJmd0OyAtIGFsZXJ0IHdoZW4gcHJpY2UgcGVyIDEsMDAwIHVuaXRzIGlzIGF0IG9yIGJlbG93IHRoaXMKL3NldG1pbm9yZGVyICZsdDt1bml0cyZndDsgLSBvbmx5IG9mZmVycyB3aG9zZSBzZWxsZXIgbWluIG9yZGVyIGlzIGF0IG9yIGJlbG93IHRoaXMKL3N0YXR1cyAtIHNob3cgY3VycmVudCBzZXR0aW5ncyBhbmQgdGhlIGJlc3QgbWF0Y2hpbmcgb2ZmZXIgcmlnaHQgbm93Ci9iZXN0IC0gbGlzdCB0aGUgY2hlYXBlc3Qgb2ZmZXJzIHdpdGhpbiB5b3VyIG1pbi1vcmRlciBmaWx0ZXIKL3JlY29tbWVuZGVkIC0gc2hvdyBzb3VyY2UncyBjdXJyZW50IHJlY29tbWVuZGVkICh0b3ApIG9mZmVyCi9ncmFwaCBbcmFuZ2VdIFtsaW5lc10gLSBwcmljZSBoaXN0b3J5IGNoYXJ0IChzZWUgL2dyYXBoaGVscCkKL2VuYWJsZSAtIHJlc3VtZSBhbGVydHMKL2Rpc2FibGUgLSBwYXVzZSBhbGVydHMKL2hlbHAgLSBzaG93IHRoaXMgbWVzc2FnZQ==")
 
@@ -211,14 +164,13 @@ def parse_command(text):
     parts = text.strip().split()
     if not parts or not parts[0].startswith("/"):
         return None, []
-    cmd = parts[0].split("@", 1)[0].lower()  # strip /cmd@BotName
+    cmd = parts[0].split("@", 1)[0].lower()
     return cmd, parts[1:]
 
 
 def process_commands(state, offers):
-    """Apply inbound control commands. Returns True if config changed."""
     cfg = state["config"]
-    allowed = set(state["chat_ids"])  # only the configured target may control it
+    allowed = set(state["chat_ids"])
     changed = False
     updates = nt_get_updates(state["update_cursor"])
 
@@ -231,7 +183,7 @@ def process_commands(state, offers):
         if not chat_id or not text:
             continue
         if allowed and chat_id not in allowed:
-            continue  # ignore anyone who is not the configured target
+            continue
 
         cmd, args = parse_command(text)
         if cmd is None:
@@ -305,13 +257,9 @@ def process_commands(state, offers):
     return changed
 
 
-# ---------------------------------------------------------------------------
-# Offer fetching + parsing
-# ---------------------------------------------------------------------------
 
 
 def _num(value):
-    """Coerce a value (possibly nested like {'amount': 1.2}) into a float."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -327,7 +275,6 @@ def _num(value):
 
 
 def _fmt_delivery(expected):
-    """Turn an source duration like '00:20:00' or '1.00:00:00' into '20m' / '1d'."""
     if not expected or not isinstance(expected, str):
         return ""
     days = 0
@@ -347,25 +294,12 @@ def _fmt_delivery(expected):
 
 
 def price_per_1k(price_per_unit):
-    """Convert a per-units USD price into USD per 1,000 units.
-
-    source currency offers are always quoted per single units (unitSystem
-    "Unit1", e.g. pricePerUnitInUSD.amount = 0.00498), so the conversion is a
-    straight x1000 for every offer.
-    """
     if price_per_unit is None or price_per_unit <= 0:
         return None
     return round(price_per_unit * 1000, 4)
 
 
 def effective_price_per_1k(listed_ppk, delivery_method, order_qty):
-    """USD you actually pay to RECEIVE 1,000 units, including platform tax + fees.
-
-    standard delivery is taxed 30% by platform (you keep 70% of what you buy);
-    in-game / group-payout delivery avoids that tax. On top, source charges the
-    buyer 8% + $0.30 flat per order; the flat part is spread over the offer's
-    minimum order size (its smallest realistic purchase).
-    """
     if listed_ppk is None or listed_ppk <= 0:
         return None
     method = re.sub(r"[^a-z]", "", (delivery_method or "").lower())
@@ -378,7 +312,6 @@ def effective_price_per_1k(listed_ppk, delivery_method, order_qty):
 
 
 def parse_source_offers(data):
-    """Parse the predefinedOffers/augmentedGame/offers response shape."""
     if not isinstance(data, dict):
         return []
     results = data.get("results")
@@ -439,7 +372,6 @@ def fetch_offers():
             data = resp.json()
             batch = parse_source_offers(data)
             if not batch and page == 1:
-                # Unknown shape: fall back to the generic extractor.
                 batch = extract_offers(data)
             offers.extend(batch)
             total_pages = data.get("totalPages", 1) if isinstance(data, dict) else 1
@@ -448,9 +380,9 @@ def fetch_offers():
             page += 1
         if offers:
             return _dedupe(offers)
-        print("Offers API returned no recognizable offers; trying page fallback.")
+        print("API returned no recognizable entries; trying page fallback.")
     except (requests.RequestException, ValueError) as exc:
-        print(f"Offers API fetch failed ({exc}); trying page fallback.")
+        print(f"API fetch failed ({exc}); trying page fallback.")
 
     page_url = os.environ.get("SOURCE_PAGE", DEFAULT_PAGE_URL).strip()
     try:
@@ -471,7 +403,6 @@ def _dedupe(offers):
     return unique
 
 
-# --- Generic fallback parser (used only if the known shape ever changes) ----
 
 PRICE_KEYS = ["pricePerUnitInUSD", "pricePerUnit", "unitPrice", "price"]
 MINQTY_KEYS = ["minQuantity", "minUnitsPerTrade", "minimumQuantity", "minQty", "minOrder"]
@@ -583,10 +514,6 @@ def _scan_json_objects(text):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Price history
-# ---------------------------------------------------------------------------
-
 
 def _tz():
     name = os.environ.get("SAMPLER_TZ", "Europe/Riga")
@@ -620,14 +547,6 @@ def _median(values):
 
 
 def summarize_offers(offers, cfg, top=None):
-    """Compute the per-run datapoint stored in history.csv.
-
-    Tracks two things that actually matter: the cheapest price (across all
-    offers and across offers that pass the min-order filter), and source's
-    own recommended "top" offer — its optimal pick weighing price, seller
-    rating, trust and delivery. Both are stored as listed price and as real
-    cost (after platform tax + source fees).
-    """
     prices = [o["price_per_1k"] for o in offers if o.get("price_per_1k")]
     if not prices:
         return None
@@ -655,18 +574,14 @@ def summarize_offers(offers, cfg, top=None):
 
 
 def fetch_top_offer():
-    """Fetch source's recommended ("top") offer for units — its own optimal
-    pick. Returns a single parsed offer dict, or None on failure."""
     url = os.environ.get("SOURCE_PICK_URL", "").strip() or DEFAULT_TOPOFFER_URL
     try:
         resp = requests.get(url, headers=HEADERS, timeout=40)
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        print(f"Top-offer fetch failed: {exc}")
+        print(f"Top-entry fetch failed: {exc}")
         return None
-    # The topOffer response is a single {offer, user, ...} row; the offers
-    # parser expects a {"results": [...]} envelope, so wrap it and reuse it.
     if isinstance(data, dict) and "results" not in data:
         data = {"results": [data]}
     parsed = parse_source_offers(data)
@@ -706,18 +621,13 @@ def record_history(offers, cfg, top=None):
     print(f"Recorded history point ({len(kept)} rows retained).")
 
 
-# ---------------------------------------------------------------------------
-# Graphing
-# ---------------------------------------------------------------------------
-
 
 def parse_graph_args(args):
-    """Turn /graph arguments into render options."""
     toks = [a.strip().lower() for a in args if a.strip()]
     dates = []
     range_name = None
-    explicit = set()  # which of {min, rec} were explicitly requested
-    remove = set()  # which of {min, rec, threshold} to hide
+    explicit = set() 
+    remove = set() 
     qual = False
     eff = False
 
@@ -748,7 +658,6 @@ def parse_graph_args(args):
             qual = True
         elif t in ("eff", "effective", "real", "realcost"):
             eff = True
-        # silently ignore anything else
 
     show = {"min": True, "rec": True, "threshold": True}
     if explicit:
@@ -773,7 +682,7 @@ def parse_graph_args(args):
     if parsed_dates:
         since = parsed_dates[0]
         if len(parsed_dates) >= 2:
-            until = parsed_dates[1] + timedelta(days=1)  # inclusive end day
+            until = parsed_dates[1] + timedelta(days=1) 
             label = f"{parsed_dates[0]:%b %d} \u2013 {parsed_dates[1]:%b %d}"
         else:
             label = f"since {parsed_dates[0]:%b %d}"
@@ -809,7 +718,6 @@ def parse_graph_args(args):
 
 
 def render_graph(opts):
-    """Render a PNG chart. Returns (png_bytes, caption) or None if no data."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -855,7 +763,6 @@ def render_graph(opts):
                 y = float(raw)
             except (TypeError, ValueError):
                 continue
-            # Skip implausible/legacy values so one bad row can't wreck the axis.
             if y <= 0 or y > 1000:
                 continue
             ys.append(y)
@@ -875,8 +782,6 @@ def render_graph(opts):
         if xs:
             ax.plot(xs, ys, color="#ef6c00", linewidth=1.8, label="source pick" + cost_tag)
             plotted = True
-    # The alert threshold is a listed-price value, so only overlay it on the
-    # listed-price chart (not the real-cost view).
     threshold = None if eff else opts.get("threshold")
     if opts["show"]["threshold"] and threshold is not None:
         ax.axhline(
@@ -936,7 +841,7 @@ def handle_graph(chat_id, args, cfg):
     opts["threshold"] = cfg["max_price_per_1k"]
     try:
         result = render_graph(opts)
-    except Exception as exc:  # never let a chart error crash the run
+    except Exception as exc: 
         print(f"Graph render failed: {exc}")
         nt_send(chat_id, "Sorry, I couldn't render that graph. Try a different range.")
         return
@@ -951,9 +856,6 @@ def handle_graph(chat_id, args, cfg):
     nt_send_photo(chat_id, png, caption=caption)
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
 
 
 def matching_offers(offers, cfg):
@@ -1001,7 +903,7 @@ def evaluate(state, offers):
         print("Alerts paused; skipping notifications.")
         return
     if not state["chat_ids"]:
-        print("No registered chats yet. Send /start to the bot.")
+        print("No registered destinations yet.")
         return
 
     matches = matching_offers(offers, cfg)
@@ -1009,16 +911,14 @@ def evaluate(state, offers):
     to_notify = []
     for o in matches:
         prev = state["alerted"].get(o["id"])
-        # Notify on a new matching offer or a price drop vs the last alert.
         if prev is None or o["price_per_1k"] < prev - 1e-9:
             to_notify.append(o)
         new_alerted[o["id"]] = o["price_per_1k"]
 
-    # Keep dedup memory only for offers still matching (disappeared offers reset).
     state["alerted"] = new_alerted
 
     if not to_notify:
-        print(f"{len(matches)} matching offer(s), nothing new to alert.")
+        print(f"{len(matches)} matching entries(s), nothing new to alert.")
         return
 
     header = f"\U0001f6a8 {len(to_notify)} units offer(s) match your filters:"
@@ -1031,24 +931,18 @@ def evaluate(state, offers):
     print(f"Sent {len(to_notify)} alert(s).")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 
 def main():
     state = load_state()
     offers = fetch_offers()
-    print(f"Fetched {len(offers)} offer(s).")
+    print(f"Fetched {len(offers)} entries(s).")
     top = fetch_top_offer()
     if top:
-        print(f"${top['price_per_1k']:.4f}/1k.")
+        print(f"{top['price_per_1k']:.4f}/1000.")
 
-    # Record the datapoint first so /graph this run includes the latest price.
     if offers:
         record_history(offers, state["config"], top)
 
-    # Commands next so config changes apply to this run's evaluation.
     process_commands(state, offers)
 
     if offers:
