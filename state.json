@@ -5,5 +5,7 @@
     "max_min_order": 1500,
     "enabled": true
   },
-  "alerted": {}
+  "alerted": {
+    "1d1a70c7-e7e9-4110-4a6e-08de9c4f9231": 4.0
+  }
 }
