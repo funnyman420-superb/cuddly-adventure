@@ -1,0 +1,9 @@
+{
+  "update_cursor": 0,
+  "config": {
+    "max_price_per_1k": 4.0,
+    "max_min_order": 1500,
+    "enabled": true
+  },
+  "alerted": {}
+}
