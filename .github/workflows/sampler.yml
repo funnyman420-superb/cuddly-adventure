@@ -33,11 +33,3 @@ jobs:
           SOURCE_PICK_URL: ${{ secrets.SOURCE_PICK_URL }}
           SAMPLER_TZ: ${{ secrets.SAMPLER_TZ }}
         run: python tracker.py
-      - name: Keepalive
-        run: |
-          date -u +%F > .heartbeat
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .heartbeat
-          git commit -m "ping" || echo "nothing"
-          git push || echo "nopush"
